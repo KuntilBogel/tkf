@@ -63,7 +63,7 @@ app.all("/proxy/", async (req, res) => {
 });
 
 const port = process.env.SERVER_PORT || process.env.PORT || 3000
-app.listen(port, () => {
+app.listen(port, '0.0.0.0', () => {
   console.log("Listen on port " + port); 
 });
 const isValidUrl = (urlString) => {
