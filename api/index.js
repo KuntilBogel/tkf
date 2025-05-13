@@ -1,86 +1,106 @@
-import axios from 'axios';
 import express from 'express';
+import axios from 'axios';
+import { URL } from 'url';
+
 const app = express();
 
 app.use(express.json());
 
-// Endpoint for checking server info
-app.all("/", async (req, res) => {
-  return res.json({
-    serverdata: (await axios.get("http://ip-api.com/json/")).data,
-  });
-});
+// CORS proxy handler for /cors endpoint
+app.all('/cors/*', async (req, res) => {
+  const url = req.url;
+  const origin = req.protocol + '://' + req.get('host');
+  const prefix = '/cors/';
+  
+  // 1) If this isn't already a /cors/ request, redirect to /cors/<encoded full>
+  if (!url.startsWith(prefix)) {
+    return res.redirect(302, `${origin}${prefix}${encodeURIComponent(url)}`);
+  }
 
-// CORS proxy endpoint
-app.all("/cors", async (req, res) => {
+  // 2) Decode the URL after "/cors/" and build a fresh URL
+  const encoded = url.slice(prefix.length);
+  let target = decodeURIComponent(encoded);
+  
+  // If the URL does not have a scheme, assume http://
+  if (!/^https?:\/\//i.test(target)) {
+    target = 'http://' + target;
+  }
+  const targetUrl = new URL(target);
+
   try {
-    if (req.method !== "POST")
-      return res.json({ error: "You should use POST method" });
+    // 3) Create a proxied request and sanitize headers
+    const proxiedReq = {
+      method: req.method,
+      url: targetUrl.toString(),
+      headers: req.headers,
+      data: req.body,
+    };
 
-    const { url, body, method, headers } = req.body;
+    // Send the proxied request
+    const response = await axios(proxiedReq);
 
-    if (!url || !method)
-      return res.status(400).json({
-        error: "One or more fields are missing, please check your method and URL body value",
-      });
+    // Handle redirects in response headers
+    let headers = { ...response.headers };
 
-    // Validate URL
-    if (!isValidUrl(url))
-      return res.status(400).json({ error: "Invalid URL. It should use http/https protocol" });
+    if (response.status >= 300 && response.status < 400 && headers.location) {
+      const loc = new URL(headers.location, targetUrl).toString();
+      headers.location = `${origin}${prefix}${encodeURIComponent(loc)}`;
+    }
 
-    // Validate HTTP method
-    if (
-      ![
-        "GET",
-        "PUT",
-        "POST",
-        "DELETE",
-        "PATCH",
-        "HEAD",
-        "OPTIONS",
-        "TRACE",
-        "CONNECT",
-      ].includes(method.toUpperCase())
-    )
-      return res.status(400).json({
-        error: `${method.toUpperCase()} is an invalid HTTP method`,
-      });
+    // Add CORS headers
+    headers['Access-Control-Allow-Origin'] = '*';
+    headers['Access-Control-Allow-Headers'] = '*';
 
-    // Make the request to the target URL
-    const resp = await axios.request({
-      url,
-      method,
-      headers,
-      data: body,  // axios expects `data` for POST/PUT requests
-    });
+    const contentType = headers['content-type'] || '';
 
-    // Return the response to the client
-    return res.json({
-      body: resp.data,
-      headers: resp.headers,
-      status: resp.status,
-      statusText: resp.statusText,
-    });
+    // Handle HTML content rewriting
+    if (contentType.includes('text/html')) {
+      let body = response.data;
+      body = rewriteHtmlLinks(body, origin, targetUrl);
+      return res.status(response.status).set(headers).send(body);
+    }
+
+    // Handle JS/TS URL rewriting in the code
+    if (/\.(ts|js)$/i.test(targetUrl.pathname) && contentType.includes('text')) {
+      let codeText = response.data;
+      codeText = codeText.replace(
+        /(["'`(])(https?:\/\/[^"'`)]+)(["'`)]?)/g,
+        (_, open, urlStr, close = '') =>
+          `${open}${origin}${prefix}${encodeURIComponent(urlStr)}${close}`
+      );
+      return res.status(response.status).set(headers).send(codeText);
+    }
+
+    // Fallback: return response as-is for other content
+    return res.status(response.status).set(headers).send(response.data);
   } catch (e) {
-    return res.status(500).json({ error: e?.toString() });
+    return res.status(500).json({ error: e.toString() });
   }
 });
 
+// Function to rewrite resource URLs in HTML content
+function rewriteHtmlLinks(body, origin, baseUrl) {
+  return body.replace(/(src|href|action)="(https?:\/\/[^"'`]+)"/g, (_, attr, url) => {
+    const abs = new URL(url, baseUrl).toString();
+    const proxied = `${origin}/cors/${encodeURIComponent(abs)}`;
+    return `${attr}="${proxied}"`;
+  });
+}
+
 // Helper function to validate URLs
-const isValidUrl = (urlString) => {
-  let url;
+function isValidUrl(urlString) {
   try {
-    url = new URL(urlString);
+    const url = new URL(urlString);
+    return url.protocol === 'http:' || url.protocol === 'https:';
   } catch (e) {
     return false;
   }
-  return url.protocol === "http:" || url.protocol === "https:";
-};
+}
 
 // Start server
-const port = process.env.SERVER_PORT || process.env.PORT || 3000;
-app.listen(port, '0.0.0.0', () => {
-  console.log(`Server is running on port ${port}`);
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`CORS Proxy server listening on port ${port}`);
 });
 
 export default app;
