@@ -1,10 +1,16 @@
 import express from 'express';
 import axios from 'axios';
 import { URL } from 'url';
+import https from 'https';
 
 const app = express();
 
 app.use(express.json());
+
+// Create an agent that ignores SSL certificate errors
+const agent = new https.Agent({
+  rejectUnauthorized: false,  // Bypass SSL validation
+});
 
 // CORS proxy handler for /cors endpoint
 app.all('/cors/*', async (req, res) => {
@@ -34,6 +40,7 @@ app.all('/cors/*', async (req, res) => {
       url: targetUrl.toString(),
       headers: req.headers,
       data: req.body,
+      httpsAgent: agent,  // Use the agent that ignores SSL errors
     };
 
     // Send the proxied request
